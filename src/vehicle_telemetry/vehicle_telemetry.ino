@@ -6,7 +6,7 @@
 #define carbrake 25
 #define accelerator 26
 #define system_name "Intelligent Vehicle Instrumentation System"
-#define system_version "v0.2.1"
+#define system_version "v0.3.0"
 
 String command = ""; // Variable that stores the command typed in the serial monitor
 int warning_distance = 150; // Variable that stores the distance warning value
@@ -20,9 +20,25 @@ unsigned long lastBeep = 0; // Timestamp of the last buzzer state change
 bool beepState = false; // Current buzzer state 
 int beepInterval = 1000; // Time interval between buzzer toggles in milliseconds
 
+// Speedometer state and vehicle dynamics parameters used for speed simulation
+bool speedometerOn = false;
+float speed = 0.0f;
+const float acceleration = 20.0f;   
+const float cbrake = 40.0f;         
+const float friction = 5.0f;         
+const float max_speed = 200.0f;
+
 unsigned long lastUpdate = 0; // Timestamp of the last main loop update
+unsigned long lastSpeedPrint = 0; // Timestamp of the last speed data print
 unsigned long lastDistancePrint = 0; // Timestamp of the last distance measurement print
 unsigned long lastVibratPrint = 0; // Timestamp of the last vibration data print
+
+bool parkingAlertActive = false; // Indicates whether the parking alert system is currently active
+
+int vibration = 0; // Current vibration intensity level
+
+int gear = 0; // Current selected gear
+int engineFreq = 0; // Engine sound frequency used by the buzzer
 
 void setup() {
   Serial.begin(115200);
@@ -37,6 +53,8 @@ void setup() {
   Serial.println("distancemeter.on - Print the current information captured by the laser distance meter;");
   Serial.println("distancemeter.off - Stop printing laser distance meter information;");
   Serial.println("warning.distance x - Define a maximum distance x (in mm) for the buzzer to sound (maximum 1200 mm);");
+  Serial.println("speedometer.on - Print the current speed;");
+  Serial.println("speedometer.off - Stop printing the current speed.");
   Serial.println();
 
   Wire.begin(14, 27);  // Initializes I2C communication using GPIO 14 (SDA) and GPIO 27 (SCL)
@@ -79,8 +97,8 @@ void loop() {
       noTone(buzzer);
     }
     else if (command.startsWith("warning.distance")) { // Check if the received command sets the warning distance
-      String value = command.substring(17); // Extract the distance value from the command string
-      warning_distance = value.toInt(); // Convert the received value to an integer
+    String value = command.substring(17); // Extract the distance value from the command string
+    warning_distance = value.toInt(); // Convert the received value to an integer
       if (warning_distance > 0 && warning_distance <= 1200) { // Validate that the distance is within the allowed range
         Serial.print("Warning distance set to ");
         Serial.print(warning_distance);
@@ -90,7 +108,14 @@ void loop() {
         warning_distance = 150; // Restore the default warning distance if the value is invalid
         Serial.println("Invalid value.");
       }
+    }
 
+    else if (command == "speedometer.on") {
+      speedometerOn = true;
+    }
+    else if (command == "speedometer.off"){
+      speedometerOn = false;
+      noTone(buzzer);
     }
 
     else { 
@@ -100,7 +125,7 @@ void loop() {
 
   if (vibrationOn) { // Prints vibration on the X, Y and Z axis
     if (millis() - lastVibratPrint >= 3000) { // Print the vibration measured in millimeters every 3 seconds
-      lastVibratPrint = millis(); 
+      lastVibratPrint = millis();
       Serial.print("X: "); 
       Serial.print(x);
       Serial.print("   Y: "); 
@@ -114,14 +139,15 @@ void loop() {
       if (millis() - lastDistancePrint >= 500){ // Print the distance measured in millimeters every half second
         lastDistancePrint = millis();
         Serial.print("Distance: ");
-        Serial.print(measure.RangeMilliMeter); 
+        Serial.print(measure.RangeMilliMeter);
         Serial.println(" mm");
       }
-      if (warning_distance > 0 && measure.RangeMilliMeter <= warning_distance) {  // Check if the measured distance is below the warning threshold
+      if (warning_distance > 0 && measure.RangeMilliMeter <= warning_distance) { // Check if the measured distance is below the warning threshold
+        parkingAlertActive = true;
         float ratio = // Calculate the distance ratio relative to the warning limit
           (float)measure.RangeMilliMeter /
           (float)warning_distance;
-          if (ratio > 0.75)  // Adjust the buzzer interval according to proximity
+          if (ratio > 0.75) // Adjust the buzzer interval according to proximity
               beepInterval = 1000;
           else if (ratio > 0.50)
               beepInterval = 500;
@@ -135,21 +161,96 @@ void loop() {
               lastBeep = now; // Update the last toggle timestamp
               if (beepState){ // Turn the buzzer off if it is currently on
                 noTone(buzzer);
-                beepState = false; 
+                beepState = false;
               } else {
-                tone(buzzer, 1800); 
-                beepState = true;  
+                tone(buzzer, 1800);
+                beepState = true;
               }
           }
       } else {
+        parkingAlertActive = false;
         noTone(buzzer);
-        beepState = false; 
+        beepState = false;
       }
     }
     else {
       noTone(buzzer);
-      beepState = false;  
+      beepState = false;
       Serial.println("Out of reach");
+    }
+  }
+
+  if (speedometerOn) {
+
+    if (!parkingAlertActive) { // Generate engine sound while the parking alert is inactive
+      if (speed > 0) {
+          tone(buzzer, engineFreq + vibration);
+      } else
+          noTone(buzzer);
+      }
+
+    // Calculate elapsed time since the last update
+    unsigned long now = millis();
+    float deltaTime = (now - lastUpdate) / 1000.0f;
+    lastUpdate = now;
+
+    // Read brake and accelerator pedal states
+    bool stateBrake = digitalRead(carbrake);
+    bool stateAccelerator = digitalRead(accelerator);
+    
+    if (stateBrake == LOW) { // Apply braking force
+      speed -= cbrake * deltaTime;
+    }
+    if (stateAccelerator == LOW) {  // Apply acceleration force
+      speed += acceleration * deltaTime;
+    }
+    if (stateBrake == HIGH && stateAccelerator == HIGH) { // Apply natural deceleration when no pedal is pressed
+      speed -= friction * deltaTime;
+    }
+
+    if (speed < 0.0f){  // Keep speed within valid limits
+      speed = 0.0f;
+    }
+    if (speed > max_speed) {
+      speed = max_speed;
+    }
+
+    if (millis() - lastSpeedPrint >= 500) {  // Print the current speed every 500 ms
+      lastSpeedPrint = millis();
+      Serial.print("Speed: ");
+      Serial.print(speed);
+      Serial.println(" km/h");
+    }
+
+    speed = constrain(speed, 0.0f, max_speed); // Ensure speed remains within the configured range
+    if (speed < 20) // Determine the current gear based on vehicle speed
+        gear = 1;
+    else if (speed < 50)
+        gear = 2;
+    else if (speed < 90)
+        gear = 3;
+    else if (speed < 130)
+        gear = 4;
+    else
+        gear = 5;
+    switch (gear) // Calculate engine sound frequency according to speed and gear
+    {
+      case 1: engineFreq = map(speed, 0, 20, 120, 450); break;
+      case 2: engineFreq = map(speed, 20, 50, 250, 650); break;
+      case 3: engineFreq = map(speed, 50, 90, 450, 900); break;
+      case 4: engineFreq = map(speed, 90, 130, 700, 1300); break;
+      case 5: engineFreq = map(speed, 130, 200, 1000, 1800); break;
+    }
+    vibration += 15; // Add a small frequency variation to simulate engine vibration
+    if (vibration > 100) vibration = 0;
+
+    if (!parkingAlertActive) { // Update the buzzer with the current engine sound
+      if (speed > 0) {
+          tone(buzzer, engineFreq + vibration);
+      }
+      else {
+          noTone(buzzer);
+      }
     }
   }
 }
