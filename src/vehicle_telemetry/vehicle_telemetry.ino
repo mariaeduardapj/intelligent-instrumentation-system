@@ -1,12 +1,15 @@
 #include <SparkFun_ADXL345.h> // ADXL345 vibration library
 #include <Adafruit_VL53L0X.h> // VL53L0X distance library
 #include <Wire.h> // I2C communication library
+#include <DHT.h>
 
 #define buzzer 13
 #define carbrake 25
 #define accelerator 26
+#define temperature 33
+#define DHTTYPE DHT11
 #define system_name "Intelligent Vehicle Instrumentation System"
-#define system_version "v0.4.0"
+#define system_version "v0.5.0"
 
 String command = ""; // Variable that stores the command typed in the serial monitor
 int warning_distance = 150; // Variable that stores the distance warning value
@@ -38,6 +41,7 @@ unsigned long lastUpdate = 0; // Timestamp of the last main loop update
 unsigned long lastSpeedPrint = 0; // Timestamp of the last speed data print
 unsigned long lastDistancePrint = 0; // Timestamp of the last distance measurement print
 unsigned long lastVibratPrint = 0; // Timestamp of the last vibration data print
+unsigned long lastTempPrint = 0;
 
 bool parkingAlertActive = false; // Indicates whether the parking alert system is currently active
 
@@ -45,6 +49,9 @@ int vibration = 0; // Current vibration intensity level
 
 int gear = 0; // Current selected gear
 int engineFreq = 0; // Engine sound frequency used by the buzzer
+
+bool temperatureOn = false;
+DHT dht(temperature, DHTTYPE);
 
 void setup() {
   Serial.begin(115200);
@@ -60,7 +67,9 @@ void setup() {
   Serial.println("distancemeter.off - Stop printing laser distance meter information;");
   Serial.println("warning.distance x - Define a maximum distance x (in mm) for the buzzer to sound (maximum 1200 mm);");
   Serial.println("speedometer.on - Print the current speed;");
-  Serial.println("speedometer.off - Stop printing the current speed.");
+  Serial.println("speedometer.off - Stop printing the current speed;");
+  Serial.println("temperature.on - Print the current engine temperature;");
+  Serial.println("temperature.off - Stop print the current engine temperature.");
   Serial.println();
 
   Wire.begin(14, 27);  // Initializes I2C communication using GPIO 14 (SDA) and GPIO 27 (SCL)
@@ -75,6 +84,8 @@ void setup() {
 
   pinMode(carbrake, INPUT_PULLUP); // Configure the brake pedal input with internal pull-up resistor enabled
   pinMode(accelerator, INPUT_PULLUP); // Configure the accelerator pedal input with internal pull-up resistor enabled
+
+  dht.begin();
 }
 
 void loop() {
@@ -122,6 +133,14 @@ void loop() {
     else if (command == "speedometer.off"){
       speedometerOn = false;
       noTone(buzzer);
+    }
+
+    else if (command == "temperature.on") {
+      temperatureOn = true;
+    }
+    else if (command == "temperature.off"){
+      temperatureOn = false;
+
     }
 
     else { 
@@ -290,5 +309,38 @@ void loop() {
         attentionLimit = 12; // High-speed vibration threshold
         criticalLimit = 40; // High-speed critical vibration threshold
     }
+  }
+
+  if (temperatureOn) {
+    // Read temperature as Celsius
+    float t = dht.readTemperature();
+    // Read temperature as Fahrenheit 
+    float f = dht.readTemperature(true);
+
+    // Check if any reads failed and exit early 
+    if (isnan(t) || isnan(f)) {
+      Serial.println(F("Failed to read from DHT sensor!"));
+      return;
+    }
+
+    if (millis() - lastTempPrint >= 3000){ // Print the temperature measured in millimeters every 3 second
+        lastTempPrint = millis();
+        Serial.print(F("Temperature: "));
+        Serial.print(t);
+        Serial.print(F("°C "));
+        Serial.print(f);
+        Serial.print(F("°F"));
+        if(t < 60){
+          Serial.println("  BELOW"); 
+          } else if(t < 80) {
+              Serial.println("  NORMAL");  
+          } else if (t < 100) { 
+            Serial.println("  OVERLOAD"); 
+          } else {
+            Serial.println("  CRITICAL");
+          }
+          
+    }
+    delay(2000);
   }
 }
