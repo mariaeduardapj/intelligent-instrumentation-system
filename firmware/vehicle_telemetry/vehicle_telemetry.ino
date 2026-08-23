@@ -17,7 +17,7 @@
 #define temperature 33
 #define DHTTYPE DHT11
 #define system_name "Intelligent Vehicle Instrumentation System"
-#define system_version "v0.6.0"
+#define system_version "v1.0.0"
 #define STATUS_NORMAL 0
 #define STATUS_ATTENTION 1
 #define STATUS_CRITICAL 2
@@ -143,11 +143,11 @@ void OnDataSent(
 // WiFi Setup
 // =================================================================================================
 // Wi-Fi credentials
-const char* ssid = "Edilson";
-const char* password = "03480434";
+const char* ssid = ""; // Network name 
+const char* password = ""; // Network password 
 
 // Python receiver IP and port
-const char* receiverIP = "192.168.100.9";  
+const char* receiverIP = "";  // IP running Python software
 const int receiverPort = 5005;
 
 WiFiUDP udp;

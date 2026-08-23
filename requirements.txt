@@ -1,0 +1,13 @@
+# Intelligent Instrumentation System - Locked Dependencies
+# 
+# Specific versions tested and guaranteed to work together
+
+pygame==2.6.0
+flask==2.3.3
+pyserial==3.5.2
+flask-cors==4.0.1
+python-dotenv==1.0.1
+
+# Development dependencies
+black==24.8.0
+pylint==3.2.6
