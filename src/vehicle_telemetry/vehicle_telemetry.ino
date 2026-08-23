@@ -16,7 +16,7 @@
 #define temperature 33
 #define DHTTYPE DHT11
 #define system_name "Intelligent Vehicle Instrumentation System"
-#define system_version "v0.6.0"
+#define system_version "v0.7.0"
 #define STATUS_NORMAL 0
 #define STATUS_ATTENTION 1
 #define STATUS_CRITICAL 2
