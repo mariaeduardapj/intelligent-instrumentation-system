@@ -6,13 +6,19 @@
 #define carbrake 25
 #define accelerator 26
 #define system_name "Intelligent Vehicle Instrumentation System"
-#define system_version "v0.3.0"
+#define system_version "v0.4.0"
 
 String command = ""; // Variable that stores the command typed in the serial monitor
 int warning_distance = 150; // Variable that stores the distance warning value
 
 bool vibrationOn = false; // Controls whether vibration data should be printed
 ADXL345 adxl = ADXL345(); // Creates an ADXL345 sensor object
+long sumSquares = 0; // Accumulates the squared vibration variations for RMS calculation
+int xAnt = 0; // Previous acceleration reading on the X, Y and Z axis
+int yAnt = 0;
+int zAnt = 0;
+int attentionLimit = 3; // RMS threshold that indicates moderate vibration
+int criticalLimit = 10; // RMS threshold that indicates excessive vibration
 
 bool distancemeterOn = false; // Controls whether distance data should be printed
 Adafruit_VL53L0X lox = Adafruit_VL53L0X(); // Creates an VL53L0X sensor object
@@ -126,11 +132,33 @@ void loop() {
   if (vibrationOn) { // Prints vibration on the X, Y and Z axis
     if (millis() - lastVibratPrint >= 3000) { // Print the vibration measured in millimeters every 3 seconds
       lastVibratPrint = millis();
-      Serial.print("X: "); 
-      Serial.print(x);
-      Serial.print("   Y: "); 
-      Serial.print(y);
-      Serial.print("   Z: "); 
+      sumSquares = 0; // Reset the accumulator before collecting a new vibration sample set
+      for(int i = 0; i < 100; i++) { // Collect 100 samples to calculate vibration RMS
+        int x, y, z;
+        adxl.readAccel(&x, &y, &z);  // Read the current acceleration values
+        int dx = x - xAnt; // Calculate acceleration variation on the X, Y and Z axis to disregard the acceleration due to gravity
+        int dy = y - yAnt;
+        int dz = z - zAnt;
+        sumSquares +=
+          (long)dx*dx +
+          (long)dy*dy +
+          (long)dz*dz; // Accumulate squared variations to estimate vibration intensity
+        xAnt = x; // Store current X, Y and Z reading for the next comparison
+        yAnt = y;
+        zAnt = z;
+        delay(5); // Small delay to maintain a consistent sampling interval
+      }
+      float rms = sqrt(sumSquares / (100.0 * 3.0)); // Compute the RMS vibration index from all collected samples
+      Serial.print("Vibration RMS: ");
+      Serial.print(rms);
+      if(rms < attentionLimit){
+          Serial.println("  NORMAL"); // Vibration is within the expected operating range
+
+      } else if(rms < criticalLimit) {
+          Serial.println("  ATTENTION");  // Vibration is elevated and should be monitored
+      } else { 
+        Serial.println(" CRITICAL"); // Vibration exceeds the acceptable threshold
+      }
     }
   }
 
@@ -251,6 +279,16 @@ void loop() {
       else {
           noTone(buzzer);
       }
+    }
+    if(speed < 50) {
+        attentionLimit = 3; // Low-speed vibration threshold
+        criticalLimit = 10; // Low-speed critical vibration threshold
+    } else if(speed < 100) {
+        attentionLimit = 6; // Medium-speed vibration threshold
+        criticalLimit = 20; // Medium-speed critical vibration threshold
+    } else {
+        attentionLimit = 12; // High-speed vibration threshold
+        criticalLimit = 40; // High-speed critical vibration threshold
     }
   }
 }
