@@ -8,6 +8,7 @@
 #include <DHT.h> // DHT11 temperature library
 #include <esp_now.h> // ESP comunication library
 #include <WiFi.h> // WIFI library for ESP comunication
+#include <WiFiUdp.h>
 
 
 #define buzzer 13
@@ -123,6 +124,7 @@ uint8_t receiverMAC[] = {
 };
 
 
+
 // Callback function automatically executed after each ESP-NOW transmission
 void OnDataSent(
   const wifi_tx_info_t *info,
@@ -136,6 +138,19 @@ void OnDataSent(
     Serial.println("Fail");
   }
 }
+
+// =================================================================================================
+// WiFi Setup
+// =================================================================================================
+// Wi-Fi credentials
+const char* ssid = "Edilson";
+const char* password = "03480434";
+
+// Python receiver IP and port
+const char* receiverIP = "192.168.100.9";  
+const int receiverPort = 5005;
+
+WiFiUDP udp;
 
 
 void setup() {
@@ -219,6 +234,15 @@ void setup() {
 
   // Register callback function to monitor transmission results
   esp_now_register_send_cb(OnDataSent);
+
+  WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println("WiFi connected!");
+
+  udp.begin(receiverPort);
 }
 
 
@@ -509,22 +533,31 @@ void updateVehicleStatus() {
 
 
 void sendTelemetry() {
-
-  // Copy the latest system measurements into the telemetry packet
-  telemetry.speedData = speed;
-  telemetry.vehicleStatus = vehicleStatus;
-  telemetry.vibrationStatus = vibrationStatus;
-  telemetry.vibrationData = vibrationRMS;
-  telemetry.temperatureStatus = temperatureStatus;
-  telemetry.temperatureData = motorTemperature;
-  telemetry.obstacleDistanceData = obstacleDistance;
-
-  // Send the telemetry packet to the dashboard ESP32 using ESP-NOW
-  esp_now_send(
-      receiverMAC,
-      (uint8_t*)&telemetry,
-      sizeof(telemetry)
-  );
+    // Send binary via ESP-NOW (keep existing)
+    telemetry.speedData = speed;
+    telemetry.vehicleStatus = vehicleStatus;
+    telemetry.vibrationStatus = vibrationStatus;
+    telemetry.vibrationData = vibrationRMS;
+    telemetry.temperatureStatus = temperatureStatus;
+    telemetry.temperatureData = motorTemperature;
+    telemetry.obstacleDistanceData = obstacleDistance;
+    
+    esp_now_send(receiverMAC, (uint8_t*)&telemetry, sizeof(telemetry));
+    
+    String json = "{";
+    json += "\"speed\":" + String(speed) + ",";
+    json += "\"vehicleStatus\":" + String(vehicleStatus) + ",";
+    json += "\"vibrationStatus\":" + String(vibrationStatus) + ",";
+    json += "\"vibrationData\":" + String(vibrationRMS) + ",";
+    json += "\"temperatureStatus\":" + String(temperatureStatus) + ",";
+    json += "\"temperatureData\":" + String(motorTemperature) + ",";
+    json += "\"distance\":" + String(obstacleDistance);
+    json += "}";
+    
+    // Envia via UDP
+    udp.beginPacket(receiverIP, receiverPort);
+    udp.print(json);
+    udp.endPacket();
 }
 
 
