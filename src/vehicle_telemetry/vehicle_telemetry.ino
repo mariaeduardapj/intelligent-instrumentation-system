@@ -5,7 +5,10 @@
 #include <SparkFun_ADXL345.h> // ADXL345 vibration library
 #include <Adafruit_VL53L0X.h> // VL53L0X distance library
 #include <Wire.h> // I2C communication library
-#include <DHT.h>
+#include <DHT.h> // DHT11 temperature library
+#include <esp_now.h> // ESP comunication library
+#include <WiFi.h> // WIFI library for ESP comunication
+
 
 #define buzzer 13
 #define carbrake 25
@@ -13,7 +16,7 @@
 #define temperature 33
 #define DHTTYPE DHT11
 #define system_name "Intelligent Vehicle Instrumentation System"
-#define system_version "v0.5.1"
+#define system_version "v0.6.0"
 #define STATUS_NORMAL 0
 #define STATUS_ATTENTION 1
 #define STATUS_CRITICAL 2
@@ -87,11 +90,52 @@ int temperatureStatus = 0;
 // =================================================================================================
 unsigned long lastUpdate = 0; 
 unsigned long lastSpeedPrint = 0; 
-unsigned long lastVibrationPrint = 0; 
 unsigned long lastDistancePrint = 0;
 unsigned long lastTemperaturePrint = 0;
 unsigned long lastVibrationSample = 0;
+unsigned long lastTelemetrySend = 0;
 
+// =================================================================================================
+// VEHICLE STATUS
+// =================================================================================================
+int vehicleStatus = STATUS_NORMAL;
+
+// =================================================================================================
+// TELEMETRY SYSTEM
+// =================================================================================================
+
+// Structure used to package all vehicle telemetry data before transmission
+typedef struct {
+  float speedData;           // Current vehicle speed (km/h)
+  int vehicleStatus;         // Overall vehicle status (NORMAL, ATTENTION or CRITICAL)
+  int vibrationStatus;       // Current vibration alarm status
+  float vibrationData;       // Measured vibration RMS value
+  int temperatureStatus;     // Current temperature alarm status
+  float temperatureData;     // Measured engine temperature (°C)
+  int obstacleDistanceData;  // Measured obstacle distance (mm)
+} TelemetryData;
+
+TelemetryData telemetry; // Structure instance used to store and send telemetry packets
+
+// MAC address of the dashboard ESP32 receiver
+uint8_t receiverMAC[] = {
+  0x4C, 0xEB, 0xD6, 0x7B, 0xD5, 0xA0
+};
+
+
+// Callback function automatically executed after each ESP-NOW transmission
+void OnDataSent(
+  const wifi_tx_info_t *info,
+  esp_now_send_status_t status)
+{
+  Serial.print("Send Status: ");
+
+  if(status == ESP_NOW_SEND_SUCCESS) {
+    Serial.println("Success");
+  } else {
+    Serial.println("Fail");
+  }
+}
 
 
 void setup() {
@@ -142,8 +186,40 @@ void setup() {
 
   // TEMPERATURE SENSOR SETTING
   dht.begin();
-}
 
+  // =================================================================================================
+  // INITIAL SETTINGS - TELEMETRY
+  // =================================================================================================
+
+  // Configure ESP32 Wi-Fi in Station mode (required by ESP-NOW)
+  WiFi.mode(WIFI_STA);
+
+  // Initialize ESP-NOW communication protocol
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("ESP-NOW Error");
+    return;
+  }
+
+  // Create and configure the receiver device information
+  esp_now_peer_info_t peerInfo = {};
+
+  // Copy the receiver MAC address into the peer configuration structure
+  memcpy(peerInfo.peer_addr, receiverMAC, 6);
+
+  // Use the current Wi-Fi channel
+  peerInfo.channel = 0;
+
+  // Disable encryption for simplicity
+  peerInfo.encrypt = false;
+
+  // Register the receiver as a valid ESP-NOW peer
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("Failed to add peer");
+  }
+
+  // Register callback function to monitor transmission results
+  esp_now_register_send_cb(OnDataSent);
+}
 
 
 void handleCommands() {
@@ -200,60 +276,50 @@ void handleCommands() {
 }
 
 
-
 void updateVibration() {
-  int x, y, z; // Variables that store vibration values on each axis
-  adxl.readAccel(&x, &y, &z); // Reads the current vibration values from the sensor
-  
-  if (millis() - lastVibrationPrint >= 3000) { // Update vibration RMS every 3 seconds
-    lastVibrationPrint = millis();
-    sumSquares = 0; // Reset the accumulator before collecting a new vibration sample set
+  if (millis() - lastVibrationSample >= 5) { // Collect one vibration sample every 5 milliseconds
+    lastVibrationSample = millis(); // Update the timestamp of the last sample
+    int x, y, z;
+    adxl.readAccel(&x, &y, &z); // Read the current acceleration values from the sensor
 
-    if(millis() - lastVibrationSample >= 5) {  // Collect one vibration sample every 5 milliseconds
-      lastVibrationSample = millis(); // Update the timestamp of the last sample
-      int x, y, z;
-      adxl.readAccel(&x, &y, &z); // Read the current acceleration values from the sensor
+    int dx = x - xAnt; // Calculate the variation on each axis to remove the constant gravity component
+    int dy = y - yAnt;
+    int dz = z - zAnt;
 
-      int dx = x - xAnt; // Calculate the variation on each axis to remove the constant gravity component
-      int dy = y - yAnt;
-      int dz = z - zAnt;
+    sumSquares +=
+      (long)dx*dx +
+      (long)dy*dy +
+      (long)dz*dz; // Accumulate squared variations for RMS computation
 
-      sumSquares +=
-        (long)dx*dx +
-        (long)dy*dy +
-        (long)dz*dz; // Accumulate squared variations for RMS computation
+    xAnt = x; // Store the current readings for the next variation calculation
+    yAnt = y;
+    zAnt = z;
 
-      xAnt = x; // Store the current readings for the next variation calculation
-      yAnt = y;
-      zAnt = z;
+    sampleCount++;  // Increment the number of collected samples
+  }
 
-      sampleCount++;  // Increment the number of collected samples
+  if(sampleCount >= 100) { // Calculate vibration RMS after collecting 100 samples
+    vibrationRMS =
+      sqrt(sumSquares / (100.0 * 3.0)); // Compute the RMS vibration index
+    sumSquares = 0; // Reset the accumulator for the next measurement cycle
+    sampleCount = 0; // Reset the sample counter
+
+    if(vibrationRMS < attentionLimit) {
+      vibrationStatus = STATUS_NORMAL;
+    } else if(vibrationRMS < criticalLimit) {
+      vibrationStatus = STATUS_ATTENTION;
+    } else {
+      vibrationStatus = STATUS_CRITICAL;
     }
 
-    if(sampleCount >= 100) { // Calculate vibration RMS after collecting 100 samples
-      vibrationRMS =
-        sqrt(sumSquares / (100.0 * 3.0)); // Compute the RMS vibration index
-      sumSquares = 0; // Reset the accumulator for the next measurement cycle
-      sampleCount = 0; // Reset the sample counter
-
-      if(vibrationRMS < attentionLimit) {
-        vibrationStatus = STATUS_NORMAL;
-      } else if(vibrationRMS < criticalLimit) {
-        vibrationStatus = STATUS_ATTENTION;
-      } else {
-        vibrationStatus = STATUS_CRITICAL;
-      }
-
-      if(debugVibration){
-        Serial.print("Vibration: ");
-        Serial.print(vibrationRMS);
-        Serial.print(" RMS ");
-        Serial.println(vibrationStatus);
-      }
+    if(debugVibration){
+      Serial.print("Vibration: ");
+      Serial.print(vibrationRMS);
+      Serial.print(" RMS ");
+      Serial.println(vibrationStatus);
     }
   }
 }
-
 
 
 void updateDistance() {
@@ -288,6 +354,7 @@ void updateDistance() {
         if (now - lastBeep >= beepInterval){ // Toggle the buzzer when the interval expires
             lastBeep = now; // Update the last toggle timestamp
             if (beepState){ // Turn the buzzer off if it is currently on
+              noTone(buzzer);
               beepState = false;
             } else {
               tone(buzzer, 1800);
@@ -302,7 +369,10 @@ void updateDistance() {
   else {
     noTone(buzzer);
     beepState = false;
-    Serial.println("Out of reach");
+
+    if (debugDistance) {
+      Serial.println("Out of reach");
+    }
   }
 
   if (!parkingAlertActive) { // Generate engine sound while the parking alert is inactive
@@ -313,7 +383,6 @@ void updateDistance() {
     }
   }
 }
-
 
 
 void updateSpeed() {
@@ -391,6 +460,7 @@ void updateSpeed() {
   }
 }
 
+
 void updateTemperature() {
   // Read temperature as Celsius
   float t = dht.readTemperature();
@@ -421,33 +491,63 @@ void updateTemperature() {
 }
 
 
+void updateVehicleStatus() {
+  vehicleStatus = STATUS_NORMAL;
+
+  if(vibrationStatus == STATUS_ATTENTION ||
+    temperatureStatus == STATUS_ATTENTION)
+  {
+      vehicleStatus = STATUS_ATTENTION;
+  }
+
+  if(vibrationStatus == STATUS_CRITICAL ||
+    temperatureStatus == STATUS_CRITICAL)
+  {
+      vehicleStatus = STATUS_CRITICAL;
+  }
+}
+
+
+void sendTelemetry() {
+
+  // Copy the latest system measurements into the telemetry packet
+  telemetry.speedData = speed;
+  telemetry.vehicleStatus = vehicleStatus;
+  telemetry.vibrationStatus = vibrationStatus;
+  telemetry.vibrationData = vibrationRMS;
+  telemetry.temperatureStatus = temperatureStatus;
+  telemetry.temperatureData = motorTemperature;
+  telemetry.obstacleDistanceData = obstacleDistance;
+
+  // Send the telemetry packet to the dashboard ESP32 using ESP-NOW
+  esp_now_send(
+      receiverMAC,
+      (uint8_t*)&telemetry,
+      sizeof(telemetry)
+  );
+}
+
+
 void loop() {
  
   handleCommands();
 
   updateVibration();
-
   updateDistance();
-
   updateSpeed();
-
   updateTemperature();
  
-  
+  updateVehicleStatus();
+
+  // Send telemetry data every 100 milliseconds
+  if(millis() - lastTelemetrySend >= 100) {
+    lastTelemetrySend = millis();
+    sendTelemetry();
+  }
 }
 
-void sendTelemetry() {
-    Serial2.print(speed);
-    Serial2.print(",");
 
-    Serial2.print(vibrationStatus);
-    Serial2.print(",");
 
-    Serial2.print(temperatureStatus);
-    Serial2.print(",");
-
-    Serial2.println(obstacleDistance);
-}
 
 
 
